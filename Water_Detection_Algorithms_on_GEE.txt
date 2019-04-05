@@ -1,0 +1,251 @@
+//Map.setCenter(-97.2254, 35.2256,15);
+
+var ini_year = 1984       ;
+var end_year = 2018       ;
+
+var LeftLon = -100        ;
+var LowLat = 35           ;
+
+
+var RightLon = LeftLon + 5        ;
+var UpLat = LowLat + 5            ;
+
+
+////////////// don't change anything below
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+var xBlockSize = 5        ;
+var yBlockSize = 5        ;
+
+////////////////////////////////////////////// remove bad observations/////////////////////////////////////////////////////////////////////
+function get_BQA_bits(image,start,end,newName){
+  var pattern = 0;
+  for (var j = start; j <= end; j++){
+    pattern +=Math.pow(2,j);
+  }
+  return (image.select([0],[newName]).bitwiseAnd(pattern).rightShift(start)); // the pattern or start doesn't need to be array,
+}
+////////////////////////// get the DEM datasets 
+var SRTM_DEM = ee.Image('USGS/SRTMGL1_003');
+var ASTER_GDEM = ee.Image('NASA/ASTER_GED/AG100_003').select('elevation');
+var GMTED2010_0 = ee.Image('USGS/GMTED2010').select(['be75'],['elevation']);
+var mask = ee.Image(0).where(GMTED2010_0.gt(0), 1);
+var GMTED2010 = GMTED2010_0.updateMask(mask);
+var GTOPO30 = ee.Image('USGS/GTOPO30');
+// generate mosaic dem
+var DEM_Collection = ee.ImageCollection.fromImages([GTOPO30, GMTED2010, ASTER_GDEM]) // the latter will replace the previous,ASTER_GDEM (100m); GMTED2010 (250m); GTOPO30 (1km) 
+var DEM_mosaic = ee.Image(DEM_Collection.mosaic())
+//print ('DEM_mosaic: ', DEM_mosaic)
+//Map.addLayer(DEM_mosaic,{},'DEM_mosaic')
+if (UpLat > 59.9 || LowLat < -56 ) {
+    var final_dem = DEM_mosaic
+  } else {
+    var final_dem = ee.Image('USGS/SRTMGL1_003');
+  }
+//print('final_dem:', final_dem)
+//Map.addLayer(final_dem,{},'final_dem')
+///////////////////////////////////////////filter function/////////////////////////
+function filterBadObs(image){
+  var Designated_Fill = get_BQA_bits(image.select('BQA'), 0,0,'designated_fill'); // 1:fill, 0: not fill
+  var Dropped_Pixel = get_BQA_bits(image.select('BQA'),1,1,'dropped_pixel'); //1: dropped pixel, 0: not dropped pixel
+  var Cloud = get_BQA_bits(image.select('BQA'),4,4,'cloud'); //1: cloud, 0: not cloud
+  var Radiometric_Saturation = get_BQA_bits(image.select('BQA'),2,3,'radiometric_saturation'); //0: no bands contain saturation , 1: 1-2, 2:3-4, 3:5 or more bands contain
+  var Cloud_Conf = get_BQA_bits(image.select('BQA'),5,6,'cloud_conf'); //0: Not determined, 1:low conf, 2: medium, 3:high
+  var Cloud_Shadow_Conf = get_BQA_bits(image.select('BQA'),7,8,'cloud_shadow_conf'); //0: Not determined, 1:low conf, 2: medium, 3:high
+  var Snow_Conf = get_BQA_bits(image.select('BQA'),9,10,'snow_conf'); //0: Not determined, 1:low conf, 2: medium, 3:high
+  var Cirrus_Conf = get_BQA_bits(image.select('BQA'),11,12,'cirrus_conf'); //0: Not determined, 1:low conf, 2: medium, 3:high
+  // mountain shadow
+  var azimuth = ee.Number(image.get('SUN_AZIMUTH'))
+  var zenith0 = ee.Number(image.get('SUN_ELEVATION')).add(0)
+  var zenith = ee.Number(90).subtract(zenith0)
+  // get the dems
+  var shadow_original = ee.Terrain.hillShadow(final_dem,azimuth,zenith,100,false) // don't use hysteresis
+  var shadow = shadow_original.focal_min(1,"square","pixels",1,null) // the length can be changed
+  var good_mask = ee.Image(0).where(Designated_Fill.eq(0).and(Dropped_Pixel.eq(0)).and(Cloud.eq(0)).and(Radiometric_Saturation.eq(0)).and(Cloud_Conf.lte(1)).and(Cloud_Shadow_Conf.lte(1)).and(Snow_Conf.lte(1)).and(Cirrus_Conf.lte(1)).and(shadow.eq(1)),1);
+  //var good_mask = ee.Image(0).where(Designated_Fill.eq(0).and(Dropped_Pixel.eq(0)).and(Cloud.eq(0)).and(Radiometric_Saturation.eq(0)).and(Cloud_Conf.lte(1)).and(Cloud_Shadow_Conf.lte(1)).and(Snow_Conf.lte(1)).and(Cirrus_Conf.lte(1)),1);
+  //////////////////// here, for 0 and 1 arrays, and has the same meaning as bitwiseAnd
+  var result = image.updateMask(good_mask);
+  return result
+}
+
+function getVIs_Shadow(img){
+
+  var ndvi = img.expression('(nir - red)/(nir + red)',
+          {
+            'red':img.select(['red']),
+            'nir':img.select(['nir'])
+          })
+  
+  var mndwi_ndvi = img.expression('((green - swir1)/(green + swir1))-((nir - red)/(nir + red))',
+          {
+            'green':img.select(['green']),
+            'swir1':img.select(['swir1']),
+            'red':img.select(['red']),
+            'nir':img.select(['nir'])
+          })
+  
+  var mndwi_evi = img.expression('((green - swir1)/(green + swir1))-(2.5*(nir - red)/(nir + (6.0 * red) - (7.5 * blue) + 1.0))',
+          {
+            'green':img.select(['green']),
+            'swir1':img.select(['swir1']),
+            'red': img.select(['red']),
+            'nir': img.select(['nir']),
+            'blue': img.select(['blue'])
+          })
+  var evi = img.expression('2.5*(nir - red)/(nir + (6.0 * red) - (7.5 * blue) + 1.0)',
+          {
+            'red': img.select(['red']),
+            'nir': img.select(['nir']),
+            'blue': img.select(['blue'])
+          })
+  
+  return img.select([])
+            .addBands([mndwi_ndvi,mndwi_evi,evi,ndvi])
+            .select([0,1,2,3],['mndwi_ndvi','mndwi_evi','evi','ndvi'])
+            .copyProperties(img,img.propertyNames())
+}
+
+// detect water considering shadow
+function maskPosNegWater(img){
+  var mndwi_ndvi = img.select(['mndwi_ndvi']);
+  var mndwi_evi = img.select(['mndwi_evi']);
+  var evi = img.select(['evi']);
+  var ndvi = img.select(['ndvi']);
+  var maskPos = ee.Image(0).where((evi.lt(0.1).bitwiseOr(ndvi.lt(0.1))).bitwiseAnd(mndwi_evi.gt(0.25).bitwiseOr(mndwi_ndvi.gt(0.25))),1);
+  var maskNeg = ee.Image(0).where((evi.gte(0.1).bitwiseAnd(ndvi.gte(0.1))).bitwiseOr(mndwi_evi.lte(0.25).bitwiseAnd(mndwi_ndvi.lte(0.25))),1);
+  return img.select([])
+            .addBands([maskPos,maskNeg])
+            .select([0,1],['Pos','Neg'])
+            .copyProperties(img,img.propertyNames())
+}
+
+// function for filenames
+function zfill(number,n) {
+    var isNegative = number < 0;
+    number = isNegative ? -1 * number : number;
+    for (var i = number.toString().length; i < n; i++) {
+        number = '0' + number;
+    }
+    return (isNegative ? '-' : '') + number;
+}
+
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////// the above section is mainly functions //////////////////////////////////////////////
+function calculate_and_output(LeftLoni,LowLati,RightLoni,UpLati,yeari){
+  
+  var region = ee.Geometry.Rectangle(LeftLoni,LowLati,RightLoni,UpLati)
+  for (var i = 1; i< 47; i++){   // the original is 13
+    ///////////////////////////////////////////set the initial matrix//////////////////////////////////////////////////
+
+    /////////////////////////////////////////// set the time////////////////////////////////////////////////////////////
+    if (i==1){
+      var start_date = ee.Date.fromYMD(yeari,1,1)
+      var Pos_Bits_Bit = ee.Image(70368744177664).double();
+      var Total_Bits_Bit = ee.Image(70368744177664).double();
+    }
+  
+    var end_date = start_date.advance(8,'day')
+  
+    if (i==46){
+      end_date = ee.Date.fromYMD(yeari+1,1,1)
+    }
+    //print('start_date: ',start_date)
+    //print('end_date: ',end_date)
+    //////////////////////////////////////////// get the data///////////////////////////////////////////////////////////
+    var ImageCollection5 = ee.ImageCollection('LANDSAT/LT05/C01/T1_TOA')
+                    .filterBounds(region)
+                    .filterDate(start_date, end_date)  
+                    .sort('system:time_start')
+                    .select(['B1','B2','B3','B4','B5','B7','B6','BQA'],['blue','green','red','nir','swir1','swir2','tir','BQA'])
+
+    /////////////////////////(1999-01-01   2017-10-05)
+    var ImageCollection7 = ee.ImageCollection('LANDSAT/LE07/C01/T1_TOA')
+                    .filterBounds(region)
+                    .filterDate(start_date, end_date)  
+                    .sort('system:time_start')
+                    .select(['B1','B2','B3','B4','B5','B7','B6_VCID_1','BQA'],['blue','green','red','nir','swir1','swir2','tir','BQA'])
+
+    /////////////////////////(2013-04-11   2017-10-21)
+    var ImageCollection8 = ee.ImageCollection('LANDSAT/LC08/C01/T1_TOA')
+                    .filterBounds(region)
+                    .filterDate(start_date, end_date)   
+                    .sort('system:time_start')
+                    .select(['B2','B3','B4','B5','B6','B7','B10','BQA'],['blue','green','red','nir','swir1','swir2','tir','BQA'])
+    var ImageCollection = ee.ImageCollection(ImageCollection5.merge(ImageCollection7).merge(ImageCollection8))
+
+    var GoodObsers = ImageCollection.map(filterBadObs) // use Landsat 5 only
+    //print('GoodObsers: ',GoodObsers)
+    var VIs = GoodObsers.map(getVIs_Shadow)
+    //print('VIs: ',VIs)
+    var WaterPosNeg = VIs.map(maskPosNegWater)
+    //print(i, "WaterPosNeg: ",WaterPosNeg)
+    if (WaterPosNeg.size().getInfo() < 1){
+    start_date = end_date;
+    //print(i,'is empty: ')
+    continue;
+    }
+    //print('WaterPosNeg: ',WaterPosNeg)
+    var total_Pos = WaterPosNeg.select(['Pos']).sum()
+    var total_Neg = WaterPosNeg.select(['Neg']).sum()
+  
+    var total = ee.Image(0).expression('(Pos + Neg)',{
+        'Pos':total_Pos.select([0]),
+        'Neg':total_Neg.select([0])
+    })
+  
+    var Pos_Bit = ee.Image(0).where(total_Pos.gt(0),1).double()
+    var Total_Bit = ee.Image(0).where(total.gt(0),1).double()
+
+    ////////////////////// Save them in Bit //////////////////////////////////////////////////////////////////////////////
+  
+    var bit = Total_Bits_Bit.gt(-1).add(1).pow(Total_Bits_Bit.gt(-1).add(i-2))
+    Pos_Bits_Bit   = Pos_Bits_Bit.add(bit.multiply(Pos_Bit))
+    Total_Bits_Bit = Total_Bits_Bit.add(bit.multiply(Total_Bit))
+
+    start_date = end_date
+ 
+  }
+
+  //Map.addLayer(Pos_Bits_Bit.clip(region),{max:150000000000000,min:80000000000000},'Pos_Bits_Bit')
+  //Map.addLayer(Total_Bits_Bit.clip(region),{max:150000000000000,min:80000000000000},'Total_Bits_Bit')
+  var PositName = 'Posit_JS_ZHZ_'+yeari.toString()+'_'+zfill(LeftLoni,3).toString()+'_'+zfill(LowLati,3).toString() // in southern hemosphere using 2 instead of 3
+  var TotalName = 'Total_JS_ZHZ_'+yeari.toString()+'_'+zfill(LeftLoni,3).toString()+'_'+zfill(LowLati,3).toString()
+  Export.image.toDrive({
+    crs: 'EPSG:4326',
+    image: Pos_Bits_Bit.toDouble(),
+    description: PositName,
+    scale: 30,
+    region: region,
+    maxPixels:1000000000000
+    })
+  Export.image.toDrive({
+    crs: 'EPSG:4326',
+    image: Total_Bits_Bit.toDouble(),
+    description: TotalName,
+    scale: 30,
+    region: region,
+    maxPixels:1000000000000
+   })
+
+}
+
+for (var LowLati = LowLat; LowLati < UpLat; LowLati=LowLati+5){
+  if (LowLati +yBlockSize < UpLat){
+    var UpLati = LowLati + yBlockSize
+  }else{
+    var UpLati = UpLat
+  }
+  for (var LeftLoni = LeftLon; LeftLoni < RightLon; LeftLoni=LeftLoni+5){
+    if (LeftLoni + xBlockSize < RightLon){
+      var RightLoni = LeftLoni + xBlockSize
+    }else{
+      var RightLoni = RightLon
+    }
+    for (var yeari = ini_year; yeari < end_year; yeari=yeari+1){
+      calculate_and_output(LeftLoni,LowLati,RightLoni,UpLati,yeari)
+    }
+  }
+  
+}
