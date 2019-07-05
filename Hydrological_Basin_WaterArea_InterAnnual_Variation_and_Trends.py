@@ -14,7 +14,7 @@ import matplotlib
 def addplot(ID):
     
     WATERFN = '/home/zhzou/data/GlobalWater/DataRepository/NG_Submission/Annual_Hydrological_Basin/Water_Area/interAnnualAddArea_Tile_MatchID_'+str(ID)+'_1984_2017_Direct_only025.csv'
-    headers2 = ['time','outYesNoList','waterAreaSL']
+    headers2 = ['time','outYesNoList','waterAreaSL','Ratios']
     dfWATER = pd.read_csv(WATERFN,names = headers2)
     TimeWater = dfWATER['time'].values
     #print 'TimeWater: ',TimeWater
